@@ -2,8 +2,8 @@ from __future__ import print_function
 from __future__ import division
 
 import sys
-import time
-import code
+import time, code
+##code.interact(local=dict(globals(), **locals()))
 
 import numpy as np
 from copy import deepcopy
@@ -12,8 +12,9 @@ import tensorflow as tf
 from attention_gru_cell import AttentionGRUCell
 
 from tensorflow.contrib.cudnn_rnn.python.ops import cudnn_rnn_ops
+from tensorflow.python.layers import core as layers_core
 
-import babi_input
+import imsdb_input
 
 class Config(object):
     """Holds model hyperparams and data information."""
@@ -53,8 +54,8 @@ class Config(object):
 
     train_mode = True
 
-    dataset_location = '/home/sbender/Documents/IMSDB/movie_scripts_simple_dataset.txt'
-    vocabulary_location = '/home/sbender/Documents/IMSDB/movie_scripts_simple_vocabulary.txt'
+    dataset_location = '/home/sbender/Documents/IMSDB/movie_scripts_simple_dataset_babiformat.json'
+    vocabulary_location = '/home/sbender/Documents/IMSDB/simple_dataset_vocabs.txt'
 
 def _add_gradient_noise(t, stddev=1e-3, name=None):
     """Adds gradient noise as described in http://arxiv.org/abs/1511.06807
@@ -83,21 +84,28 @@ class DMN_PLUS(object):
 
     def load_data(self, debug=False):
         """Loads train/valid/test data and sentence encoding"""
+        # TODO self.vocabulary, self.batchsize, self.groundtruth
         if self.config.train_mode:
-            self.train, self.valid, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.vocab_size = babi_input.load_babi(self.config, split_sentences=True)
+            self.train, self.valid, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.vocab_size, self.max_a_len = imsdb_input.load_imsdb(self.config, split_sentences=True)
         else:
-            self.test, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.vocab_size = babi_input.load_babi(self.config, split_sentences=True)
+            self.test, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.vocab_size, self.max_a_len = imsdb_input.load_imsdb(self.config, split_sentences=True)
         self.encoding = _position_encoding(self.max_sen_len, self.config.embed_size)
+        vocab_reader = open(self.config.vocabulary_location,'r')
+        self.vocabulary = vocab_reader.readlines()
+        self.batchsize = self.config.batch_size
+        vocab_reader.close()
 
     def add_placeholders(self):
         """add data placeholder to graph"""
+        self.is_training = tf.placeholder(tf.bool, shape=[])
         self.question_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_q_len))
+        # TODO limit max_sentences to 20 and max_sen_len to 30
         self.input_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_sentences, self.max_sen_len))
 
         self.question_len_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size,))
         self.input_len_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size,))
 
-        self.answer_placeholder = tf.placeholder(tf.int64, shape=(self.config.batch_size,))
+        self.answer_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_a_len))
 
         self.dropout_placeholder = tf.placeholder(tf.float32)
 
@@ -224,14 +232,40 @@ class DMN_PLUS(object):
 
     def add_answer_module(self, rnn_output, q_vec):
         """Linear softmax answer module"""
-
-        rnn_output = tf.nn.dropout(rnn_output, self.dropout_placeholder)
-
+        # TODO fit to sequence output
+        '''rnn_output = tf.nn.dropout(rnn_output, self.dropout_placeholder)
         output = tf.layers.dense(tf.concat([rnn_output, q_vec], 1),
                 self.vocab_size,
-                activation=None)
-
-        return output
+                activation=None)'''
+        projection_layer = layers_core.Dense(len(self.vocabulary), use_bias=False) # TODO self.vocabulary, self.batchsize, self.groundtruth
+        embedded_size = len(self.vocabulary) + 2 # because of start and end token
+        GO_SYMBOL = len(self.vocabulary) + 1
+        END_SYMBOL = len(self.vocabulary)
+        start_tokens = tf.tile([GO_SYMBOL], [self.batchsize]) # TODO self.batchsize
+        start_tokens2D = tf.expand_dims(start_tokens,1)
+        def embedding(x):
+            return tf.one_hot(x, embedded_size)
+        # while training
+        #code.interact(local=dict(globals(), **locals()))
+        nr_target = tf.cast(tf.ones([self.batchsize]) * tf.cast(self.max_a_len, tf.float32), tf.int32)
+        decoder_hints = tf.concat([start_tokens2D, self.answer_placeholder], 1) # TODO self.groundtruth
+        decoder_hints_embedded = embedding(decoder_hints)
+        initial_state = tf.concat([rnn_output, q_vec],1)
+        initial_state = tf.contrib.rnn.LSTMStateTuple(initial_state, initial_state)
+        decoder_rnn_cell = tf.contrib.rnn.BasicLSTMCell(initial_state[0].shape[-1])
+        def train_decode():
+            train_helper = tf.contrib.seq2seq.TrainingHelper(decoder_hints_embedded, nr_target)
+            decoder = tf.contrib.seq2seq.BasicDecoder(decoder_rnn_cell, train_helper, initial_state, output_layer=projection_layer)
+            return tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=self.max_a_len)
+        def infer_decode():
+            infer_helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(embedding, start_tokens, END_SYMBOL)
+            decoder = tf.contrib.seq2seq.BasicDecoder(decoder_rnn_cell, infer_helper, initial_state, output_layer=projection_layer)
+            return tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=self.max_a_len)
+        code.interact(local=dict(globals(), **locals()))
+        decoder_output,_,_ = tf.cond(self.is_training, train_decode, infer_decode)
+        energy = decoder_output[0]
+        # TODO answers one hot encoden, sequence loss verwenden, attention gru übernehmen
+        return energy
 
     def inference(self):
         """Performs inference on the DMN model"""
@@ -298,8 +332,9 @@ class DMN_PLUS(object):
                   self.question_len_placeholder: ql[index],
                   self.input_len_placeholder: il[index],
                   self.answer_placeholder: a[index],
-                  self.dropout_placeholder: dp}
-            code.interact(local=dict(globals(), **locals()))
+                  self.dropout_placeholder: dp,
+                  self.is_training: train}
+            #code.interact(local=dict(globals(), **locals()))
             loss, pred, summary, _ = session.run(
               [self.calculate_loss, self.pred, self.merged, train_op], feed_dict=feed)
 
@@ -328,7 +363,7 @@ class DMN_PLUS(object):
         self.variables_to_save = {}
         self.load_data(debug=False)
         self.add_placeholders()
-
+        #code.interact(local=dict(globals(), **locals()))
         # set up embedding
         self.embeddings = tf.Variable(self.word_embedding.astype(np.float32), name="Embedding")
 
