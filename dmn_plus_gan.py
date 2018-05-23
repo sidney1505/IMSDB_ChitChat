@@ -3,7 +3,7 @@ from __future__ import division
 
 import sys
 import time, code
-##code.interact(local=dict(globals(), **locals()))
+###code.interact(local=dict(globals(), **locals()))
 
 import numpy as np
 from copy import deepcopy
@@ -92,20 +92,21 @@ class DMN_PLUS(object):
         self.encoding = _position_encoding(self.max_sen_len, self.config.embed_size)
         vocab_reader = open(self.config.vocabulary_location,'r')
         self.vocabulary = vocab_reader.readlines()
-        self.batchsize = self.config.batch_size
         vocab_reader.close()
+        self.vocab_size = len(self.vocabulary) + 2 # UNK & EOS tokens -> +2
+        self.batchsize = self.config.batch_size
 
     def add_placeholders(self):
         """add data placeholder to graph"""
         self.is_training = tf.placeholder(tf.bool, shape=[])
-        self.question_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_q_len))
+        self.question_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_q_len,))
         # TODO limit max_sentences to 20 and max_sen_len to 30
-        self.input_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_sentences, self.max_sen_len))
+        self.input_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_sentences, self.max_sen_len,))
 
         self.question_len_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size,))
         self.input_len_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size,))
 
-        self.answer_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_a_len))
+        self.answer_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_a_len,))
 
         self.dropout_placeholder = tf.placeholder(tf.float32)
 
@@ -116,7 +117,14 @@ class DMN_PLUS(object):
 
     def add_loss_op(self, output):
         """Calculate loss"""
-        loss = tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=output, labels=self.answer_placeholder))
+        # loss = tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=output, labels=self.answer_placeholder))
+        prediction_length = tf.argmax(tf.argmax(output, -1), -1)
+        groundtruth_length = tf.argmax(self.answer_placeholder, -1)
+        seq_length = tf.maximum(prediction_length, groundtruth_length)
+        #code.interact(local=dict(globals(), **locals()))
+        weights = tf.sequence_mask(seq_length, self.max_a_len, tf.float32)
+        weights = tf.cast(weights, tf.float32)
+        loss = tf.contrib.seq2seq.sequence_loss(output, self.answer_placeholder, weights) # TODO mask sequence
 
         # add l2 regularization for all variables except biases
         for v in tf.trainable_variables():
@@ -238,21 +246,21 @@ class DMN_PLUS(object):
                 self.vocab_size,
                 activation=None)'''
         projection_layer = layers_core.Dense(len(self.vocabulary), use_bias=False) # TODO self.vocabulary, self.batchsize, self.groundtruth
-        embedded_size = len(self.vocabulary) + 2 # because of start and end token
-        GO_SYMBOL = len(self.vocabulary) + 1
-        END_SYMBOL = len(self.vocabulary)
+        embedded_size = len(self.vocabulary) + 3 # because of start and end token
+        GO_SYMBOL = len(self.vocabulary) + 2
+        END_SYMBOL = len(self.vocabulary) + 1
         start_tokens = tf.tile([GO_SYMBOL], [self.batchsize]) # TODO self.batchsize
         start_tokens2D = tf.expand_dims(start_tokens,1)
         def embedding(x):
             return tf.one_hot(x, embedded_size)
         # while training
-        #code.interact(local=dict(globals(), **locals()))
+        ##code.interact(local=dict(globals(), **locals()))
         nr_target = tf.cast(tf.ones([self.batchsize]) * tf.cast(self.max_a_len, tf.float32), tf.int32)
         decoder_hints = tf.concat([start_tokens2D, self.answer_placeholder], 1) # TODO self.groundtruth
         decoder_hints_embedded = embedding(decoder_hints)
         initial_state = tf.concat([rnn_output, q_vec],1)
         initial_state = tf.contrib.rnn.LSTMStateTuple(initial_state, initial_state)
-        decoder_rnn_cell = tf.contrib.rnn.BasicLSTMCell(initial_state[0].shape[-1])
+        decoder_rnn_cell = tf.contrib.rnn.BasicLSTMCell(initial_state[0].shape[-1].value)
         def train_decode():
             train_helper = tf.contrib.seq2seq.TrainingHelper(decoder_hints_embedded, nr_target)
             decoder = tf.contrib.seq2seq.BasicDecoder(decoder_rnn_cell, train_helper, initial_state, output_layer=projection_layer)
@@ -261,10 +269,10 @@ class DMN_PLUS(object):
             infer_helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(embedding, start_tokens, END_SYMBOL)
             decoder = tf.contrib.seq2seq.BasicDecoder(decoder_rnn_cell, infer_helper, initial_state, output_layer=projection_layer)
             return tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=self.max_a_len)
-        code.interact(local=dict(globals(), **locals()))
+        ##code.interact(local=dict(globals(), **locals()))
         decoder_output,_,_ = tf.cond(self.is_training, train_decode, infer_decode)
         energy = decoder_output[0]
-        # TODO answers one hot encoden, sequence loss verwenden, attention gru übernehmen
+        # TODO answers one hot encoden, sequence loss verwenden, use attention gru for decoding
         return energy
 
     def inference(self):
@@ -327,14 +335,14 @@ class DMN_PLUS(object):
 
         for step in range(total_steps):
             index = range(step*config.batch_size,(step+1)*config.batch_size)
-            feed = {self.question_placeholder: qp[index],
-                  self.input_placeholder: ip[index],
+            feed = {self.question_placeholder: np.argmax(qp[index],-1),
+                  self.input_placeholder: np.argmax(ip[index],-1),
                   self.question_len_placeholder: ql[index],
                   self.input_len_placeholder: il[index],
-                  self.answer_placeholder: a[index],
+                  self.answer_placeholder: np.argmax(a[index],-1),
                   self.dropout_placeholder: dp,
                   self.is_training: train}
-            #code.interact(local=dict(globals(), **locals()))
+            ##code.interact(local=dict(globals(), **locals()))
             loss, pred, summary, _ = session.run(
               [self.calculate_loss, self.pred, self.merged, train_op], feed_dict=feed)
 
@@ -363,7 +371,7 @@ class DMN_PLUS(object):
         self.variables_to_save = {}
         self.load_data(debug=False)
         self.add_placeholders()
-        #code.interact(local=dict(globals(), **locals()))
+        ##code.interact(local=dict(globals(), **locals()))
         # set up embedding
         self.embeddings = tf.Variable(self.word_embedding.astype(np.float32), name="Embedding")
 

@@ -2,7 +2,7 @@ from __future__ import division
 from __future__ import print_function
 
 import sys, code, json
-##code.interact(local=dict(globals(), **locals()))
+####code.interact(local=dict(globals(), **locals()))
 
 import os as os
 import numpy as np
@@ -122,6 +122,14 @@ def create_vector(word, word2vec, word_vector_size, silent=True):
     return vector
 
 def process_word(word, word2vec, vocab, ivocab, word_vector_size, to_return="word2vec", silent=True):
+    if to_return == "one_hot":
+        one_hot = np.zeros(len(vocab) + 2) # UNK & EOS
+        if word in vocab:
+            one_hot[vocab.index(word)] = 1
+        else:
+            one_hot[-2] = 1
+        return one_hot
+
     if not word in word2vec:
         create_vector(word, word2vec, word_vector_size, silent)
     if not word in vocab: 
@@ -133,8 +141,8 @@ def process_word(word, word2vec, vocab, ivocab, word_vector_size, to_return="wor
         return word2vec[word]
     elif to_return == "index":
         return vocab[word]
-    elif to_return == "onehot":
-        raise Exception("to_return = 'onehot' is not implemented yet")
+    else:
+        return -1
 
 def process_input(data_raw, floatX, word2vec, vocab, ivocab, embed_size, split_sentences=False):
     questions = []
@@ -159,14 +167,14 @@ def process_input(data_raw, floatX, word2vec, vocab, ivocab, embed_size, split_s
                                             vocab = vocab, 
                                             ivocab = ivocab, 
                                             word_vector_size = embed_size, 
-                                            to_return = "index") for w in s] for s in inp]
+                                            to_return = "one_hot") for w in s] for s in inp]
             else:
                 inp_vector = [process_word(word = w, 
                                             word2vec = word2vec, 
                                             vocab = vocab, 
                                             ivocab = ivocab, 
                                             word_vector_size = embed_size, 
-                                            to_return = "index") for w in inp]
+                                            to_return = "one_hot") for w in inp]
             if split_sentences:
                 inputs.append(inp_vector)
             else:
@@ -179,7 +187,7 @@ def process_input(data_raw, floatX, word2vec, vocab, ivocab, embed_size, split_s
                                         vocab = vocab, 
                                         ivocab = ivocab, 
                                         word_vector_size = embed_size, 
-                                        to_return = "index") for w in q]
+                                        to_return = "one_hot") for w in q]
             questions.append(np.vstack(q_vector).astype(floatX)) # what is the problem with the question vectors???
             # process answers
             a = x["A"].lower().split(' ')
@@ -189,7 +197,7 @@ def process_input(data_raw, floatX, word2vec, vocab, ivocab, embed_size, split_s
                                         vocab = vocab, 
                                         ivocab = ivocab, 
                                         word_vector_size = embed_size, 
-                                        to_return = "index") for w in a]
+                                        to_return = "one_hot") for w in a]
             answers.append(np.vstack(a_vector).astype(floatX))
             # NOTE: here we assume the answer is one word! 
             '''answers.append(process_word(word = x["A"], 
@@ -208,12 +216,14 @@ def process_input(data_raw, floatX, word2vec, vocab, ivocab, embed_size, split_s
                     raise Exception("invalid input_mask_mode")
 
             num_sucesses += 1
+            # #code.interact(local=dict(globals(), **locals()))
             if num_sucesses % 100 == 0:
                 print(str(num_sucesses) + " / " + str(len(data_raw)))
-                if num_sucesses == 1000:
+                if num_sucesses == 200:
                     break
-        except Exception:
+        except Exception as e:
             # reset the lists
+            print(e)
             min_length = min(min(len(questions),len(inputs)),len(answers))
             questions = questions[:min_length]
             inputs = inputs[:min_length]
@@ -249,44 +259,57 @@ def get_sentence_lens(inputs):
             max_sen_lens.append(0)
     return lens, sen_lens, max(max_sen_lens)
     
-
-def pad_inputs(inputs, lens, max_len, mode="", sen_lens=None, max_sen_len=None):
+# grouping by size???
+def pad_inputs(inputs, num_sentences=None, max_num_sentences=None, mode="", sen_lens=None, max_sen_len=None, vocab_size=None):
     print('pad inputs!')
+    print(mode)
     if mode == "mask":
-        padded = [np.pad(inp, (0, max_len - lens[i]), 'constant', constant_values=0) for i, inp in enumerate(inputs)]
+        padded = [np.pad(inp, (0, max_num_sentences - num_sentences[i]), 'constant', constant_values=0) for i, inp in enumerate(inputs)]
         return np.vstack(padded)
     # restrict max sentences and sentence lengths
     elif mode == "split_sentences":
-        ##code.interact(local=dict(globals(), **locals()))
-        num_fails = 0
-        num_sucesses = 0
-        padded = np.zeros((len(inputs), max_len, max_sen_len))
+        padded = np.zeros((len(inputs), max_num_sentences, max_sen_len, vocab_size))
+        num_words = 0
         for i, inp in enumerate(inputs):
-            # dirty guranties, that shape is correct
-            padded_sentences = [np.pad(s[:max_sen_len], (0, max_sen_len - sen_lens[i][j]), 'constant', constant_values=0) for j, s in enumerate(inp[max(0,len(inp)-max_len):])]
+            #code.interact(local=dict(globals(), **locals()))
+            for j in range(max_num_sentences):
+                for k in range(max_sen_len):
+                    if j < len(inp) and k < len(inp[j]):
+                        padded[i][j][k][np.argmax(inp[j][k])] = 1
+                    else:
+                        padded[i][j][k][-1] = 1 # EOS tokens
+            if i % 100 == 0:
+                print(str(i))
+            '''# dirty guranties, that shape is correct
+            padded_sentences = [np.pad(s[:max_sen_len], (0, max_sen_len - sen_lens[i][j]), 'constant', constant_values=0) for j, s in enumerate(inp[max(0,len(inp)-max_num_sentences):])]
             # trim array according to max allowed inputs
-            if len(padded_sentences) > max_len:
-                padded_sentences = padded_sentences[(len(padded_sentences)-max_len):]
-                lens[i] = max_len
+            if len(padded_sentences) > max_num_sentences:
+                padded_sentences = padded_sentences[(len(padded_sentences)-max_num_sentences):]
+                lens[i] = max_num_sentences
             try:
                 if len(sen_lens[i]) > 0:
                     padded_sentences = np.vstack(padded_sentences)
-                    padded_sentences = np.pad(padded_sentences, ((0, max_len - lens[i]),(0,0)), 'constant', constant_values=0)
+                    padded_sentences = np.pad(padded_sentences, ((0, max_num_sentences - lens[i]),(0,0)), 'constant', constant_values=0)
                     padded[i] = padded_sentences
                 num_sucesses += 1
                 if num_sucesses % 100 == 0:
                     print(str(num_sucesses) + ' / ' + str(len(inputs)))
             except Exception:
                 if num_fails <= 3:
-                    code.interact(local=dict(globals(), **locals()))
-                num_fails += 1
-        print('num_fails: ' + str(num_fails) + ' num_sucesses: ' + str(num_sucesses))
+                    #code.interact(local=dict(globals(), **locals()))
+                    pass
+                num_fails += 1'''
+        # print('num_fails: ' + str(num_fails) + ' num_sucesses: ' + str(num_sucesses))
         return padded
-    padded = [np.pad(np.squeeze(inp, axis=1), (0, max(0,max_len - lens[i])), 'constant', constant_values=0) for i, inp in enumerate(inputs)]
-    padded2 = filter(lambda x: x.shape == padded[0].shape, padded)
-    excluded = len(padded) - len(padded2)
-    print('excluded ' + str(excluded) + ' from ' + str(len(padded)) + '!!! That are ' + str(100.0 * (float(excluded) / len(padded))))
-    return np.vstack(padded2)
+    else:
+        try:
+            #padded = [np.pad(np.squeeze(inp, axis=1), (0, max(0,max_len - lens[i])), 'constant', constant_values=0) for i, inp in enumerate(inputs)]
+            padded = [np.expand_dims(np.pad(inp, ((0, max(0,max_sen_len - sen_lens[i])), (0,0)), 'constant', constant_values=0),0) for i, inp in enumerate(inputs)]
+            #padded = np.expand_dims(padded, 0)
+            return np.vstack(padded)
+        except Exception as e:
+            print(e)
+            #code.interact(local=dict(globals(), **locals()))
 
 def create_embedding(word2vec, ivocab, embed_size):
     embedding = np.zeros((len(ivocab), embed_size))
@@ -298,7 +321,7 @@ def create_embedding(word2vec, ivocab, embed_size):
 # returns self.train, self.valid, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.vocab_size
 # self.train = questions[:config.num_train], inputs[:config.num_train], q_lens[:config.num_train], input_lens[:config.num_train], input_masks[:config.num_train], answers[:config.num_train]
 #{'Q': 'Where is the football', 'A': 'garden', 'C': 'Mary moved to the bathroom . Sandra journeyed to the bedroom . Mary got the football there . John went to the kitchen . Mary went back to the kitchen . Mary went back to the garden . ', 'S': [2, 5]}
-def load_imsdb(config, split_sentences=False):
+def load_imsdb(config, split_sentences=True):
     #
     #split_sentences = False
     dataset_reader = open(config.dataset_location,'r')
@@ -307,15 +330,15 @@ def load_imsdb(config, split_sentences=False):
     babi_train_raw = imsdb_data[:val_test_border]
     babi_test_raw = imsdb_data[val_test_border:]
     dataset_reader.close()
-    #
-    vocabulary_reader = open(config.dataset_location,'r')
-    vocabulary = vocabulary_reader.readlines()
-    vocabulary_reader.close()
     ###
-    vocab = {}
+    # vocab = {}
+    vocab_reader = open(config.vocabulary_location,'r')
+    vocab = vocab_reader.read()
+    vocab_reader.close()
+    vocab = vocab.split('\n')
     ivocab = {}
 
-    babi_train_raw_old, babi_test_raw_old = get_babi_raw(config.babi_id, config.babi_test_id)
+    #babi_train_raw_old, babi_test_raw_old = get_babi_raw(config.babi_id, config.babi_test_id)
 
     if config.word2vec_init:
         assert config.embed_size == 100
@@ -324,14 +347,13 @@ def load_imsdb(config, split_sentences=False):
         word2vec = {}
 
     # set word at index zero to be end of sentence token so padding with zeros is consistent
-    process_word(word = "<eos>", \
+    '''process_word(word = "<eos>", \
                 word2vec = word2vec, \
                 vocab = vocab, \
                 ivocab = ivocab, \
                 word_vector_size = config.embed_size, \
-                to_return = "index")
+                to_return = "index")'''
 
-    #code.interact(local=dict(globals(), **locals()))
     print('==> get train inputs')
     train_data = process_input(babi_train_raw, config.floatX, word2vec, vocab, ivocab, config.embed_size, split_sentences)
     print('==> get test inputs')
@@ -344,7 +366,7 @@ def load_imsdb(config, split_sentences=False):
         word_embedding = np.random.uniform(-config.embedding_init, config.embedding_init, (len(ivocab), config.embed_size))
 
     inputs, questions, answers, input_masks = train_data if config.train_mode else test_data
-    #code.interact(local=dict(globals(), **locals()))
+    ###code.interact(local=dict(globals(), **locals()))
     if split_sentences:
         input_lens, sen_lens, max_sen_len = get_sentence_lens(inputs)
         max_mask_len = max_sen_len
@@ -355,7 +377,7 @@ def load_imsdb(config, split_sentences=False):
     max_input_len = min(np.max(input_lens), config.max_allowed_inputs)
     #pad out arrays to max
     if split_sentences:
-        inputs = pad_inputs(inputs, input_lens, max_input_len, "split_sentences", sen_lens, max_sen_len)
+        inputs = pad_inputs(inputs, input_lens, max_input_len, "split_sentences", sen_lens, max_sen_len, vocab_size=len(vocab)+1)
         input_masks = np.zeros(len(inputs))
     else:
         inputs = pad_inputs(inputs, input_lens, max_input_len)
@@ -363,17 +385,17 @@ def load_imsdb(config, split_sentences=False):
 
     q_lens = get_lens(questions)
     max_q_len = np.max(q_lens)
-    questions = pad_inputs(questions, q_lens, max_q_len)
+    questions = pad_inputs(questions, sen_lens=q_lens, max_sen_len=max_q_len)
 
     a_lens = get_lens(answers)
     max_a_len = np.max(a_lens)
-    answers = pad_inputs(answers, a_lens, max_a_len)
+    answers = pad_inputs(answers, sen_lens=a_lens, max_sen_len=max_a_len)
 
     print('max_a_len')
     print(max_a_len)
     print('max_q_len')
     print(max_q_len)
-
+    # code.interact(local=dict(globals(), **locals()))
     if config.train_mode:
         train = questions[:config.num_train], inputs[:config.num_train], q_lens[:config.num_train], input_lens[:config.num_train], input_masks[:config.num_train], answers[:config.num_train]
 
