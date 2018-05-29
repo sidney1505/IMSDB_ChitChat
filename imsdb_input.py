@@ -123,11 +123,10 @@ def create_vector(word, word2vec, word_vector_size, silent=True):
 
 def process_word(word, word2vec, vocab, ivocab, word_vector_size, to_return="word2vec", silent=True):
     if to_return == "one_hot":
-        one_hot = np.zeros(len(vocab) + 2) # UNK & EOS
         if word in vocab:
-            one_hot[vocab.index(word)] = 1
+            one_hot = vocab.index(word)
         else:
-            one_hot[-2] = 1
+            one_hot = len(vocab)
         return one_hot
 
     if not word in word2vec:
@@ -219,8 +218,8 @@ def process_input(data_raw, floatX, word2vec, vocab, ivocab, embed_size, split_s
             # #code.interact(local=dict(globals(), **locals()))
             if num_sucesses % 100 == 0:
                 print(str(num_sucesses) + " / " + str(len(data_raw)))
-                if num_sucesses == 200:
-                    break
+                if num_sucesses == 20000:
+                    break #
         except Exception as e:
             # reset the lists
             print(e)
@@ -268,16 +267,14 @@ def pad_inputs(inputs, num_sentences=None, max_num_sentences=None, mode="", sen_
         return np.vstack(padded)
     # restrict max sentences and sentence lengths
     elif mode == "split_sentences":
-        padded = np.zeros((len(inputs), max_num_sentences, max_sen_len, vocab_size))
+        padded = np.ones((len(inputs), max_num_sentences, max_sen_len)) * (vocab_size - 1)
         num_words = 0
         for i, inp in enumerate(inputs):
             #code.interact(local=dict(globals(), **locals()))
             for j in range(max_num_sentences):
                 for k in range(max_sen_len):
                     if j < len(inp) and k < len(inp[j]):
-                        padded[i][j][k][np.argmax(inp[j][k])] = 1
-                    else:
-                        padded[i][j][k][-1] = 1 # EOS tokens
+                        padded[i][j][k] = inp[j][k]
             if i % 100 == 0:
                 print(str(i))
             '''# dirty guranties, that shape is correct
@@ -304,7 +301,7 @@ def pad_inputs(inputs, num_sentences=None, max_num_sentences=None, mode="", sen_
     else:
         try:
             #padded = [np.pad(np.squeeze(inp, axis=1), (0, max(0,max_len - lens[i])), 'constant', constant_values=0) for i, inp in enumerate(inputs)]
-            padded = [np.expand_dims(np.pad(inp, ((0, max(0,max_sen_len - sen_lens[i])), (0,0)), 'constant', constant_values=0),0) for i, inp in enumerate(inputs)]
+            padded = [np.expand_dims(np.pad(inp, ((0, max(0,max_sen_len - sen_lens[i])), (0,0)), 'constant', constant_values=vocab_size-1),0) for i, inp in enumerate(inputs)]
             #padded = np.expand_dims(padded, 0)
             return np.vstack(padded)
         except Exception as e:
@@ -377,7 +374,7 @@ def load_imsdb(config, split_sentences=True):
     max_input_len = min(np.max(input_lens), config.max_allowed_inputs)
     #pad out arrays to max
     if split_sentences:
-        inputs = pad_inputs(inputs, input_lens, max_input_len, "split_sentences", sen_lens, max_sen_len, vocab_size=len(vocab)+1)
+        inputs = pad_inputs(inputs, input_lens, max_input_len, "split_sentences", sen_lens, max_sen_len, vocab_size=len(vocab)+2).astype(int)
         input_masks = np.zeros(len(inputs))
     else:
         inputs = pad_inputs(inputs, input_lens, max_input_len)
@@ -385,17 +382,19 @@ def load_imsdb(config, split_sentences=True):
 
     q_lens = get_lens(questions)
     max_q_len = np.max(q_lens)
-    questions = pad_inputs(questions, sen_lens=q_lens, max_sen_len=max_q_len)
+    questions = pad_inputs(questions, sen_lens=q_lens, max_sen_len=max_q_len, vocab_size=len(vocab)+2).astype(int)
 
     a_lens = get_lens(answers)
     max_a_len = np.max(a_lens)
-    answers = pad_inputs(answers, sen_lens=a_lens, max_sen_len=max_a_len)
+    answers = pad_inputs(answers, sen_lens=a_lens, max_sen_len=max_a_len, vocab_size=len(vocab)+2).astype(int)
 
     print('max_a_len')
     print(max_a_len)
     print('max_q_len')
     print(max_q_len)
-    # code.interact(local=dict(globals(), **locals()))
+    answers = np.squeeze(answers)
+    questions = np.squeeze(questions)
+    config.num_train = int(answers.shape[0] * 0.9)
     if config.train_mode:
         train = questions[:config.num_train], inputs[:config.num_train], q_lens[:config.num_train], input_lens[:config.num_train], input_masks[:config.num_train], answers[:config.num_train]
 

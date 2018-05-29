@@ -112,7 +112,7 @@ class DMN_PLUS(object):
 
     def get_predictions(self, output):
         preds = tf.nn.softmax(output)
-        pred = tf.argmax(preds, 1)
+        pred = tf.argmax(preds, -1)
         return pred
 
     def add_loss_op(self, output):
@@ -121,7 +121,6 @@ class DMN_PLUS(object):
         prediction_length = tf.argmax(tf.argmax(output, -1), -1)
         groundtruth_length = tf.argmax(self.answer_placeholder, -1)
         seq_length = tf.maximum(prediction_length, groundtruth_length)
-        #code.interact(local=dict(globals(), **locals()))
         weights = tf.sequence_mask(seq_length, self.max_a_len, tf.float32)
         weights = tf.cast(weights, tf.float32)
         loss = tf.contrib.seq2seq.sequence_loss(output, self.answer_placeholder, weights) # TODO mask sequence
@@ -245,10 +244,10 @@ class DMN_PLUS(object):
         output = tf.layers.dense(tf.concat([rnn_output, q_vec], 1),
                 self.vocab_size,
                 activation=None)'''
-        projection_layer = layers_core.Dense(len(self.vocabulary), use_bias=False) # TODO self.vocabulary, self.batchsize, self.groundtruth
-        embedded_size = len(self.vocabulary) + 3 # because of start and end token
-        GO_SYMBOL = len(self.vocabulary) + 2
-        END_SYMBOL = len(self.vocabulary) + 1
+        projection_layer = layers_core.Dense(self.vocab_size, use_bias=False) # TODO self.vocabulary, self.batchsize, self.groundtruth
+        embedded_size = self.vocab_size + 2 + 100 # because of start and end token
+        GO_SYMBOL = self.vocab_size + 1
+        END_SYMBOL = self.vocab_size
         start_tokens = tf.tile([GO_SYMBOL], [self.batchsize]) # TODO self.batchsize
         start_tokens2D = tf.expand_dims(start_tokens,1)
         def embedding(x):
@@ -269,11 +268,11 @@ class DMN_PLUS(object):
             infer_helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(embedding, start_tokens, END_SYMBOL)
             decoder = tf.contrib.seq2seq.BasicDecoder(decoder_rnn_cell, infer_helper, initial_state, output_layer=projection_layer)
             return tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=self.max_a_len)
-        ##code.interact(local=dict(globals(), **locals()))
         decoder_output,_,_ = tf.cond(self.is_training, train_decode, infer_decode)
-        energy = decoder_output[0]
+        self.energy = decoder_output[0]
+        # code.interact(local=dict(globals(), **locals()))
         # TODO answers one hot encoden, sequence loss verwenden, use attention gru for decoding
-        return energy
+        return self.energy
 
     def inference(self):
         """Performs inference on the DMN model"""
@@ -335,16 +334,23 @@ class DMN_PLUS(object):
 
         for step in range(total_steps):
             index = range(step*config.batch_size,(step+1)*config.batch_size)
-            feed = {self.question_placeholder: np.argmax(qp[index],-1),
-                  self.input_placeholder: np.argmax(ip[index],-1),
+            feed = {self.question_placeholder: qp[index],
+                  self.input_placeholder: ip[index],
                   self.question_len_placeholder: ql[index],
                   self.input_len_placeholder: il[index],
-                  self.answer_placeholder: np.argmax(a[index],-1),
+                  self.answer_placeholder: a[index],
                   self.dropout_placeholder: dp,
                   self.is_training: train}
-            ##code.interact(local=dict(globals(), **locals()))
-            loss, pred, summary, _ = session.run(
-              [self.calculate_loss, self.pred, self.merged, train_op], feed_dict=feed)
+            loss, pred, summary, _, energy = session.run(
+              [self.calculate_loss, self.pred, self.merged, train_op, self.energy], feed_dict=feed)
+            
+            '''feed2 = {self.test_output: pred,
+                  self.answer_placeholder: a[index]}
+            loss2 = session.run(self.test_loss, feed_dict=feed2)
+            feed3 = {self.test_output_energy: energy,
+                  self.answer_placeholder: a[index]}
+            loss3 = session.run(self.test_loss2, feed_dict=feed3)
+            code.interact(local=dict(globals(), **locals()))'''
 
             if train_writer is not None:
                 train_writer.add_summary(summary, num_epoch*total_steps + step)
@@ -381,3 +387,11 @@ class DMN_PLUS(object):
         self.train_step = self.add_training_op(self.calculate_loss)
         self.merged = tf.summary.merge_all()
 
+        '''weights = tf.ones(self.answer_placeholder.shape)
+        weights = tf.cast(weights, tf.float32)
+        self.test_output = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_a_len,))
+        test_output = tf.one_hot(self.test_output, self.vocab_size)
+        self.test_loss = tf.contrib.seq2seq.sequence_loss(test_output, self.answer_placeholder, weights)
+
+        self.test_output_energy = tf.placeholder(tf.float32, shape=(self.config.batch_size, self.max_a_len,self.vocab_size))
+        self.test_loss2 = tf.contrib.seq2seq.sequence_loss(self.test_output_energy, self.answer_placeholder, weights)'''

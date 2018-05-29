@@ -78,7 +78,7 @@ for run in range(num_runs):
             print('Epoch {}'.format(epoch))
             start = time.time()
             print('gan_chitchat_train:80')
-            #code.interact(local=dict(globals(), **locals()))
+            # code.interact(local=dict(globals(), **locals()))
             train_loss, train_accuracy = model.run_epoch(
                 session, model.train, epoch, train_writer,
                 train_op=model.train_step, train=True)
