@@ -16,6 +16,13 @@ from tensorflow.python.layers import core as layers_core
 
 import imsdb_input
 
+def write_config(config):
+    config_string = json.dumps(config)
+    config_string = config_string.replace(',',',\n').replace('{','{\n').replace('}','\n}')
+    config_writer = open(config['config_path'],'w')
+    config_writer.write(config_string)
+    config_writer.close()
+
 def _add_gradient_noise(t, stddev=1e-3, name=None):
     """Adds gradient noise as described in http://arxiv.org/abs/1511.06807
     The input Tensor `t` should be a gradient.
@@ -52,17 +59,15 @@ class DMN_PLUS(object):
         self.calculate_loss = self.add_loss_op(self.output)
         self.train_step = self.add_training_op(self.calculate_loss)
         self.merged = tf.summary.merge_all()
-        if self.config['is_loaded']:
-            pass # TODO load data!
 
 
     def load_data(self, debug=False):
         """Loads train/valid/test data and sentence encoding"""
         # TODO self.vocabulary, self.batchsize, self.groundtruth
         if self.config['train_mode']:
-            self.train, self.valid, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.vocab_size, self.max_a_len = imsdb_input.load_imsdb(self.config, split_sentences=True)
+            self.train, self.valid, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.max_a_len = imsdb_input.load_imsdb(self.config, split_sentences=True)
         else:
-            self.test, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.vocab_size, self.max_a_len = imsdb_input.load_imsdb(self.config, split_sentences=True)
+            self.test, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.max_a_len = imsdb_input.load_imsdb(self.config, split_sentences=True)
         self.encoding = _position_encoding(self.max_sen_len, self.config['embed_size'])
         vocab_reader = open(self.config['vocabulary_location'],'r')
         self.vocabulary = vocab_reader.read().split('\n')
@@ -291,13 +296,13 @@ class DMN_PLUS(object):
         return output
 
 
-    def run_epoch(self, session, data, num_epoch=0, train_writer=None, train_op=None, verbose=2, train=False):
+    def run_epoch(self, session, data, num_epoch=0, train_op=None, verbose=2, train=False, saver=None):
         config = self.config
-        dp = config.dropout
+        dp = config['dropout']
         if train_op is None:
             train_op = tf.no_op()
             dp = 1
-        total_steps = len(data[0]) // config.batch_size
+        total_steps = len(data[0]) // config['batch_size']
         losses = []
         accuracies = []
 
@@ -307,7 +312,7 @@ class DMN_PLUS(object):
         qp, ip, ql, il, im, a = qp[p], ip[p], ql[p], il[p], im[p], a[p]
 
         for step in range(total_steps):
-            index = range(step*config.batch_size,(step+1)*config.batch_size)
+            index = range(step*config['batch_size'],(step+1)*config['batch_size'])
             feed = {self.question_placeholder: qp[index],
                   self.input_placeholder: ip[index],
                   self.question_len_placeholder: ql[index],
@@ -317,35 +322,26 @@ class DMN_PLUS(object):
                   self.is_training: train}
             loss, pred, summary, _, energy = session.run(
               [self.calculate_loss, self.pred, self.merged, train_op, self.energy], feed_dict=feed)
-            
-            '''feed2 = {self.test_output: pred,
-                  self.answer_placeholder: a[index]}
-            loss2 = session.run(self.test_loss, feed_dict=feed2)
-            feed3 = {self.test_output_energy: energy,
-                  self.answer_placeholder: a[index]}
-            loss3 = session.run(self.test_loss2, feed_dict=feed3)
-            code.interact(local=dict(globals(), **locals()))'''
-
-            if train_writer is not None:
-                train_writer.add_summary(summary, num_epoch*total_steps + step)
-
-            answers = a[step*config.batch_size:(step+1)*config.batch_size]
-            current_accuracy = self.calculateBatchAccuracy(pred, answers)
-            accuracies.append(current_accuracy)
+            #
+            current_accuracy = self.calculateBatchAccuracy(pred, a[index])
+            #
             losses.append(loss)
+            accuracies.append(current_accuracy)
 
             if step % 5 == 0:
-                print('Step:     ' + str(step))
+                print('Step:     ' + str(step) + ' (' + str(self.config['global_step']) + ')')
                 print('Loss:     ' + str(loss) + ' (' + str(np.mean(losses)) + ')')
                 print('Accuracy: ' + str(current_accuracy) + ' (' + str(np.mean(accuracies)) + ')')
                 print('Q:        ' + self.getSentenceString(qp[index][0]))
-                print('GT:       ' + self.getSentenceString(answers[0]))
+                print('GT:       ' + self.getSentenceString(a[index][0]))
                 print('Pred:     ' + self.getSentenceString(pred[0]))
                 print('')
-            '''if verbose and step % verbose == 0:
-                sys.stdout.write('\r{} / {} : loss = {}'.format(
-                  step, total_steps, np.mean(losses)))
-                sys.stdout.flush()'''
+
+            if train:
+                self.config['global_step'] += 1
+                if self.config['global_step'] % 1000 == 0:
+                    saver.save(session, self.config['current_weights'])
+                    write_config(self.config)
 
 
         if verbose:

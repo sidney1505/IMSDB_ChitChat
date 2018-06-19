@@ -321,7 +321,7 @@ def create_embedding(word2vec, ivocab, embed_size):
 def load_imsdb(config, split_sentences=True):
     #
     #split_sentences = False
-    if config['preprocess_data']:
+    if not config['skip_preprocessing']:
         dataset_reader = open(config['dataset_location'],'r')
         imsdb_data = json.load(dataset_reader, strict=False)
         test_border = int(len(imsdb_data) * 0.9)
@@ -374,7 +374,7 @@ def load_imsdb(config, split_sentences=True):
             input_lens = get_lens(inputs)
             mask_lens = get_lens(input_masks)
             max_mask_len = np.max(mask_lens)
-        max_input_len = min(np.max(input_lens), config['max_allowed_inputs'])
+        max_input_len = min(np.max(input_lens), config['max_allowed_input_length'])
         #pad out arrays to max
         if split_sentences:
             inputs = pad_inputs(inputs, input_lens, max_input_len, "split_sentences", sen_lens, max_sen_len, vocab_size=len(vocab)+2).astype(int)
@@ -391,35 +391,47 @@ def load_imsdb(config, split_sentences=True):
         max_a_len = np.max(a_lens)
         answers = pad_inputs(answers, sen_lens=a_lens, max_sen_len=max_a_len, vocab_size=len(vocab)+2).astype(int)
 
-        print('max_a_len')
-        print(max_a_len)
-        print('max_q_len')
-        print(max_q_len)
         answers = np.squeeze(answers)
         questions = np.squeeze(questions)
         with open(config['preprocessed_dataset_location'], 'w') as fout:
             np.savez(fout, \
-                questions=questions, \
                 inputs=inputs, \
-                q_lens=q_lens, \
-                input_lens=input_lens, \
+                questions=questions, \
+                answers=answers, \
                 input_masks=input_masks, \
-                answers=answers)
+                input_lens=input_lens, \
+                q_lens=q_lens, \
+                a_lens=a_lens, \
+                word_embedding=word_embedding)
     else:
-        data = np.loads(config['preprocessed_dataset_location'])
-        questions = data['questions']
+        data = np.load(config['preprocessed_dataset_location'])
         inputs = data['inputs']
-        q_lens = data['q_lens']
-        input_lens = data['input_lens']
-        input_masks = data['input_masks']
+        questions = data['questions']
         answers = data['answers']
-    config['num_train'] = int(answers.shape[0] * 0.9)
+        input_masks = data['input_masks']
+        q_lens = data['q_lens']
+        a_lens = data['a_lens']
+        input_lens = data['input_lens']
+        word_embedding = data['word_embedding']
+        max_q_len = np.max(q_lens)
+        max_a_len = np.max(a_lens)
+        max_input_len = min(np.max(input_lens), config['max_allowed_input_length'])
+        max_mask_len = inputs.shape[2] # ???
+    #
+    print('max_a_len')
+    print(max_a_len)
+    print('max_q_len')
+    print(max_q_len)
+    #
     if config['train_mode']:
+        config['num_train'] = int(answers.shape[0] * 0.9)
+        config['num_val'] = int(answers.shape[0] - config['num_train'])
         train = questions[:config['num_train']], inputs[:config['num_train']], q_lens[:config['num_train']], input_lens[:config['num_train']], input_masks[:config['num_train']], answers[:config['num_train']]
-
         valid = questions[config['num_train']:], inputs[config['num_train']:], q_lens[config['num_train']:], input_lens[config['num_train']:], input_masks[config['num_train']:], answers[config['num_train']:]
-        return train, valid, word_embedding, max_q_len, max_input_len, max_mask_len, len(vocab), max_a_len
+        return train, valid, word_embedding, max_q_len, max_input_len, max_mask_len, max_a_len
 
     else:
+        config['num_test'] = int(answers.shape[0])
+        config['preprocess_data'] = False
         test = questions, inputs, q_lens, input_lens, input_masks, answers
-        return test, word_embedding, max_q_len, max_input_len, max_mask_len, len(vocab), max_a_len
+        return test, word_embedding, max_q_len, max_input_len, max_mask_len, max_a_len

@@ -39,7 +39,7 @@ base_config = {
     'anneal_by' : 1.5,
     'num_hops' : 3,
     'num_attention_features' : 4,
-    'max_allowed_inputs' : 130,
+    'max_allowed_input_length' : 130,
     'num_train' : 9000,
     'train_mode' : True,
     'dataset_location' : '/home/sbender/Documents/IMSDB/movie_scripts_simple_dataset_babiformat.json',
@@ -52,18 +52,27 @@ base_config = {
     'is_loaded' : False,
     'model_name' : None,
     'base_model_dir' : '/cvhci/users/sbender/gan_chitchat/models',
-    'weights_path' : None,
+    'weights_dir' : None,
+    'current_weights' : None,
+    'best_weights' : None,
     'log_dir' : None,
     'num_train' : None,
     'num_val' : None,
     'num_test' : None,
-    'git_hash' : None
+    'skip_preprocessing' : False
 }
 
 def writeLog(path, value):
     writer = open(path,'w')
     writer.write(str(value))
     writer.close()
+
+def write_config(config):
+    config_string = json.dumps(config)
+    config_string = config_string.replace(',',',\n').replace('{','{\n').replace('}','\n}')
+    config_writer = open(config['config_path'],'w')
+    config_writer.write(config_string)
+    config_writer.close()
 
 repo = git.Repo(search_parent_directories=True)
 sha = repo.head.object.hexsha
@@ -72,12 +81,16 @@ if args.load_from == None:
     config = base_config
     config['is_commited'] = args.commit
     config['model_name'] = str(time.strftime("%Y-%m-%d %H %M %S").replace(' ','_').replace('-','_'))
+    config['skip_preprocessing'] = args.skip_preprocessing
     if config['is_commited']:
         config['model_name'] = 'com' + config['model_name']
     os.makedirs(config['base_model_dir'] + '/' + config['model_name'])
-    os.makedirs(config['base_model_dir'] + '/' + config['model_name'] + '/weights')
     config['log_dir'] = config['base_model_dir'] + '/' + config['model_name'] + '/logs'
     os.makedirs(config['log_dir'])
+    config['weights_dir'] = config['base_model_dir'] + '/' + config['model_name'] + '/weights'
+    os.makedirs(config['weights_dir'])
+    config['current_weights'] = config['weights_dir'] + '/current.weights'
+    config['best_weights'] = config['weights_dir'] + '/best.weights'
     config['train_accuracy_log_path'] = config['log_dir'] + '/train_accuracy_log.txt'
     config['train_loss_log_path'] = config['log_dir'] + '/train_loss_log.txt'
     config['val_accuracy_log_path'] = config['log_dir'] + '/val_accuracy_log.txt'
@@ -89,18 +102,24 @@ if args.load_from == None:
     repo = git.Repo(search_parent_directories=True)
     new_sha = repo.head.object.hexsha
     config['git_hash'] = new_sha
-    config_string = json.dumps(config)
-    config_writer = open(config['config_path'],'w')
-    config_writer.write(config_string)
-    config_writer.close()
+    write_config(config)
 else:
-    config_reader = open(args.load_from,'r')
+    config_path = args.load_from
+    if len(args.load_from.split('/')) == 1:
+        config_path = base_config['base_model_dir'] + '/' + config_path
+    if config_path[len('/config.json'):] != '/config.json':
+        config_path += '/config.json'
+    config_reader = open(config_path,'r')
     config_string = config_reader.read()
     config_reader.close()
+    config_string = config_string.replace(',\n',',').replace('{\n','{').replace('\n}','}')
     config = json.loads(config_string)
-    if config['is_commited'] and config['git_hash'] != sha:
-        print('git hash doesnt match!')
-        code.interact(local=dict(globals(), **locals()))
+    if config['is_commited']:
+        os.system('git add *.py')
+        os.system('git commit -m "model ' + config['model_name'] + ' restarted!"')
+        if config['git_hash'] != sha:
+            print('git hash doesnt match!')
+            code.interact(local=dict(globals(), **locals()))
 
 best_overall_val_loss = float('inf')
 
@@ -109,61 +128,63 @@ with tf.variable_scope('DMN') as scope:
     from dmn_plus_gan import DMN_PLUS
     model = DMN_PLUS(config)
 
-for run in range(num_runs):
+print('==> initializing variables')
+init = tf.global_variables_initializer()
+saver = tf.train.Saver()
 
-    print('Starting run', run)
+with tf.Session() as session:
+    session.run(init)
+    best_val_epoch = 0
+    prev_epoch_loss = float('inf')
+    best_val_loss = float('inf')
+    best_val_accuracy = 0.0
 
-    print('==> initializing variables')
-    init = tf.global_variables_initializer()
-    saver = tf.train.Saver()
+    if config['is_loaded']:
+        print('==> restoring weights')
+        saver.restore(session, model.config['current_weights'])
+    else:
+        config['is_loaded'] = True
+        saver.save(session, model.config['current_weights'])
 
-    with tf.Session() as session:
-        session.run(init)
-        best_val_epoch = 0
-        prev_epoch_loss = float('inf')
-        best_val_loss = float('inf')
-        best_val_accuracy = 0.0
+    print('==> starting training')
+    while config['current_epoch'] < config['max_epochs']:
+        print('Epoch {}'.format(config['current_epoch']))
+        start = time.time()
+        #code.interact(local=dict(globals(), **locals()))
+        train_loss, train_accuracy = model.run_epoch(
+            session,
+            model.train,
+            config['current_epoch'],
+            train_op=model.train_step,
+            train=True,
+            saver=saver)
+        writeLog(config['train_loss_log_path'], train_loss)
+        writeLog(config['train_accuracy_log_path'], train_accuracy)
+        valid_loss, valid_accuracy = model.run_epoch(session, model.valid)
+        writeLog(config['val_loss_log_path'], valid_loss)
+        writeLog(config['val_accuracy_log_path'], valid_accuracy)
 
-        if args.restore:
-            print('==> restoring weights')
-            saver.restore(session, model.config['weights_path'])
+        if valid_loss < best_val_loss:
+            best_val_loss = valid_loss
+            best_val_epoch = config['current_epoch']
+            if best_val_loss < best_overall_val_loss:
+                print('Saving weights')
+                best_overall_val_loss = best_val_loss
+                best_val_accuracy = valid_accuracy
+                saver.save(session, model.config['best_weights'])
+                write_config(config)
 
-        print('==> starting training')
-        for epoch in range(config['max_epochs']):
-            print('Epoch {}'.format(epoch))
-            start = time.time()
-            #code.interact(local=dict(globals(), **locals()))
-            train_loss, train_accuracy = model.run_epoch(
-                session,
-                model.train,
-                epoch,
-                train_writer,
-                train_op=model.train_step,
-                train=True)
-            writeLog(config['train_accuracy_log_path'], train_accuracy)
-            writeLog(config['train_loss_log_path'], train_loss)
-            valid_loss, valid_accuracy = model.run_epoch(session, model.valid)
-            writeLog(config['val_accuracy_log_path'], val_accuracy)
-            writeLog(config['val_loss_log_path'], val_loss)
+        # anneal
+        if train_loss > prev_epoch_loss * model.config['anneal_threshold']:
+            model.config['lr'] /= model.config['anneal_by']
+            print('annealed lr to %f' % model.config['lr'])
 
-            if valid_loss < best_val_loss:
-                best_val_loss = valid_loss
-                best_val_epoch = epoch
-                if best_val_loss < best_overall_val_loss:
-                    print('Saving weights')
-                    best_overall_val_loss = best_val_loss
-                    best_val_accuracy = valid_accuracy
-                    saver.save(session, model.config['weights_path'])
+        prev_epoch_loss = train_loss
 
-            # anneal
-            if train_loss > prev_epoch_loss * model.config['anneal_threshold']:
-                model.config['lr'] /= model.config['anneal_by']
-                print('annealed lr to %f' % model.config['lr'])
+        if config['current_epoch'] - best_val_epoch > config['early_stopping']:
+            break
+        config['current_epoch'] += 1
 
-            prev_epoch_loss = train_loss
 
-            if epoch - best_val_epoch > config['early_stopping']:
-                break
-            print('Total time: {}'.format(time.time() - start))
-
-        print('Best validation accuracy:', best_val_accuracy)
+print('Total time: {}'.format(time.time() - start))
+print('Best validation accuracy:', best_val_accuracy)
