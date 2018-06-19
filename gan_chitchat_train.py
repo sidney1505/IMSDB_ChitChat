@@ -18,7 +18,7 @@ parser.add_argument("-c", "--commit", default=False, help="specify path, where c
 
 args = parser.parse_args()
 
-# config template
+# hi
 """Holds model hyperparams and data information."""
 base_config = {
     'batch_size' : 100, # test
@@ -89,7 +89,6 @@ if args.load_from == None:
     repo = git.Repo(search_parent_directories=True)
     new_sha = repo.head.object.hexsha
     config['git_hash'] = new_sha
-    code.interact(local=dict(globals(), **locals()))
     config_string = json.dumps(config)
     config_writer = open(config['config_path'],'w')
     config_writer.write(config_string)

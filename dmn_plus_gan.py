@@ -52,35 +52,35 @@ class DMN_PLUS(object):
         self.calculate_loss = self.add_loss_op(self.output)
         self.train_step = self.add_training_op(self.calculate_loss)
         self.merged = tf.summary.merge_all()
-        if self.config.is_loaded:
+        if self.config['is_loaded']:
             pass # TODO load data!
 
 
     def load_data(self, debug=False):
         """Loads train/valid/test data and sentence encoding"""
         # TODO self.vocabulary, self.batchsize, self.groundtruth
-        if self.config.train_mode:
+        if self.config['train_mode']:
             self.train, self.valid, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.vocab_size, self.max_a_len = imsdb_input.load_imsdb(self.config, split_sentences=True)
         else:
             self.test, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.vocab_size, self.max_a_len = imsdb_input.load_imsdb(self.config, split_sentences=True)
-        self.encoding = _position_encoding(self.max_sen_len, self.config.embed_size)
-        vocab_reader = open(self.config.vocabulary_location,'r')
+        self.encoding = _position_encoding(self.max_sen_len, self.config['embed_size'])
+        vocab_reader = open(self.config['vocabulary_location'],'r')
         self.vocabulary = vocab_reader.read().split('\n')
         vocab_reader.close()
         self.vocab_size = len(self.vocabulary) + 2 # UNK & EOS tokens -> +2
-        self.batchsize = self.config.batch_size
+        self.batchsize = self.config['batch_size']
 
     def add_placeholders(self):
         """add data placeholder to graph"""
         self.is_training = tf.placeholder(tf.bool, shape=[])
-        self.question_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_q_len,))
+        self.question_placeholder = tf.placeholder(tf.int32, shape=(self.config['batch_size'], self.max_q_len,))
         # TODO limit max_sentences to 20 and max_sen_len to 30
-        self.input_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_sentences, self.max_sen_len,))
+        self.input_placeholder = tf.placeholder(tf.int32, shape=(self.config['batch_size'], self.max_sentences, self.max_sen_len,))
 
-        self.question_len_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size,))
-        self.input_len_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size,))
+        self.question_len_placeholder = tf.placeholder(tf.int32, shape=(self.config['batch_size'],))
+        self.input_len_placeholder = tf.placeholder(tf.int32, shape=(self.config['batch_size'],))
 
-        self.answer_placeholder = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_a_len,))
+        self.answer_placeholder = tf.placeholder(tf.int32, shape=(self.config['batch_size'], self.max_a_len,))
 
         self.dropout_placeholder = tf.placeholder(tf.float32)
 
@@ -102,7 +102,7 @@ class DMN_PLUS(object):
         # add l2 regularization for all variables except biases
         for v in tf.trainable_variables():
             if not 'bias' in v.name.lower():
-                loss += self.config.l2*tf.nn.l2_loss(v)
+                loss += self.config['l2']*tf.nn.l2_loss(v)
 
         tf.summary.scalar('loss', loss)
 
@@ -110,13 +110,13 @@ class DMN_PLUS(object):
         
     def add_training_op(self, loss):
         """Calculate and apply gradients"""
-        opt = tf.train.AdamOptimizer(learning_rate=self.config.lr)
+        opt = tf.train.AdamOptimizer(learning_rate=self.config['lr'])
         gvs = opt.compute_gradients(loss)
 
         # optionally cap and noise gradients to regularize
-        if self.config.cap_grads:
-            gvs = [(tf.clip_by_norm(grad, self.config.max_grad_val), var) for grad, var in gvs]
-        if self.config.noisy_grads:
+        if self.config['cap_grads']:
+            gvs = [(tf.clip_by_norm(grad, self.config['max_grad_val']), var) for grad, var in gvs]
+        if self.config['noisy_grads']:
             gvs = [(_add_gradient_noise(grad), var) for grad, var in gvs]
 
         train_op = opt.apply_gradients(gvs)
@@ -127,7 +127,7 @@ class DMN_PLUS(object):
         """Get question vectors via embedding and GRU"""
         questions = tf.nn.embedding_lookup(self.embeddings, self.question_placeholder)
 
-        gru_cell = tf.contrib.rnn.GRUCell(self.config.hidden_size)
+        gru_cell = tf.contrib.rnn.GRUCell(self.config['hidden_size'])
         _, q_vec = tf.nn.dynamic_rnn(gru_cell,
                 questions,
                 dtype=np.float32,
@@ -144,8 +144,8 @@ class DMN_PLUS(object):
 
         # use encoding to get sentence representation
         inputs = tf.reduce_sum(inputs * self.encoding, 2)
-        forward_gru_cell = tf.contrib.rnn.GRUCell(self.config.hidden_size)
-        backward_gru_cell = tf.contrib.rnn.GRUCell(self.config.hidden_size)
+        forward_gru_cell = tf.contrib.rnn.GRUCell(self.config['hidden_size'])
+        backward_gru_cell = tf.contrib.rnn.GRUCell(self.config['hidden_size'])
         outputs, _ = tf.nn.bidirectional_dynamic_rnn(
                 forward_gru_cell,
                 backward_gru_cell,
@@ -174,7 +174,7 @@ class DMN_PLUS(object):
             feature_vec = tf.concat(features, 1)
 
             attention = tf.contrib.layers.fully_connected(feature_vec,
-                            self.config.embed_size,
+                            self.config['embed_size'],
                             activation_fn=tf.nn.tanh,
                             reuse=reuse, scope="fc1")
 
@@ -203,7 +203,7 @@ class DMN_PLUS(object):
         gru_inputs = tf.concat([fact_vecs, attentions], 2)
 
         with tf.variable_scope('attention_gru', reuse=reuse):
-            _, episode = tf.nn.dynamic_rnn(AttentionGRUCell(self.config.hidden_size),
+            _, episode = tf.nn.dynamic_rnn(AttentionGRUCell(self.config['hidden_size']),
                     gru_inputs,
                     dtype=np.float32,
                     sequence_length=self.input_len_placeholder
@@ -271,7 +271,7 @@ class DMN_PLUS(object):
             # generate n_hops episodes
             prev_memory = q_vec
 
-            for i in range(self.config.num_hops):
+            for i in range(self.config['num_hops']):
                 # get a new episode
                 print('==> generating episode', i)
                 episode = self.generate_episode(prev_memory, q_vec, fact_vecs, i)
@@ -279,7 +279,7 @@ class DMN_PLUS(object):
                 # untied weights for memory update
                 with tf.variable_scope("hop_%d" % i):
                     prev_memory = tf.layers.dense(tf.concat([prev_memory, episode, q_vec], 1),
-                            self.config.hidden_size,
+                            self.config['hidden_size'],
                             activation=tf.nn.relu)
 
             output = prev_memory

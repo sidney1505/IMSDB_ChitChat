@@ -316,13 +316,13 @@ def create_embedding(word2vec, ivocab, embed_size):
     return embedding
 
 # returns self.train, self.valid, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.vocab_size
-# self.train = questions[:config.num_train], inputs[:config.num_train], q_lens[:config.num_train], input_lens[:config.num_train], input_masks[:config.num_train], answers[:config.num_train]
+# self.train = questions[:config['num_train']], inputs[:config['num_train']], q_lens[:config['num_train']], input_lens[:config['num_train']], input_masks[:config['num_train']], answers[:config['num_train']]
 #{'Q': 'Where is the football', 'A': 'garden', 'C': 'Mary moved to the bathroom . Sandra journeyed to the bedroom . Mary got the football there . John went to the kitchen . Mary went back to the kitchen . Mary went back to the garden . ', 'S': [2, 5]}
 def load_imsdb(config, split_sentences=True):
     #
     #split_sentences = False
-    if config.preprocess_data:
-        dataset_reader = open(config.dataset_location,'r')
+    if config['preprocess_data']:
+        dataset_reader = open(config['dataset_location'],'r')
         imsdb_data = json.load(dataset_reader, strict=False)
         test_border = int(len(imsdb_data) * 0.9)
         babi_train_raw = imsdb_data[:test_border]
@@ -330,7 +330,7 @@ def load_imsdb(config, split_sentences=True):
         dataset_reader.close()
         ###
         # vocab = {}
-        vocab_reader = open(config.vocabulary_location,'r')
+        vocab_reader = open(config['vocabulary_location'],'r')
         vocab = vocab_reader.read()
         vocab_reader.close()
         vocab = vocab.split('\n')
@@ -338,11 +338,11 @@ def load_imsdb(config, split_sentences=True):
         # no idea what this is for!!!
         ivocab = {}
 
-        #babi_train_raw_old, babi_test_raw_old = get_babi_raw(config.babi_id, config.babi_test_id)
+        #babi_train_raw_old, babi_test_raw_old = get_babi_raw(config['babi_id'], config['babi_test_id'])
 
-        if config.word2vec_init:
-            assert config.embed_size == 100
-            word2vec = load_glove(config.embed_size)
+        if config['word2vec_init']:
+            assert config['embed_size'] == 100
+            word2vec = load_glove(config['embed_size'])
         else:
             word2vec = {}
 
@@ -351,22 +351,22 @@ def load_imsdb(config, split_sentences=True):
                     word2vec = word2vec, \
                     vocab = vocab, \
                     ivocab = ivocab, \
-                    word_vector_size = config.embed_size, \
+                    word_vector_size = config['embed_size'], \
                     to_return = "index")'''
 
         print('==> get train inputs')
-        train_data = process_input(babi_train_raw, np.float32, word2vec, vocab, ivocab, config.embed_size, split_sentences, config.max_num_train_data)
+        train_data = process_input(babi_train_raw, np.float32, word2vec, vocab, ivocab, config['embed_size'], split_sentences, config['max_num_train_data'])
         print('==> get test inputs')
-        test_data = process_input(babi_test_raw, np.float32, word2vec, vocab, ivocab, config.embed_size, split_sentences, config.max_num_test_data)
+        test_data = process_input(babi_test_raw, np.float32, word2vec, vocab, ivocab, config['embed_size'], split_sentences, config['max_num_test_data'])
 
-        if config.word2vec_init:
-            assert config.embed_size == 100
-            word_embedding = create_embedding(word2vec, ivocab, config.embed_size)
+        if config['word2vec_init']:
+            assert config['embed_size'] == 100
+            word_embedding = create_embedding(word2vec, ivocab, config['embed_size'])
         else:
-            word_embedding = np.random.uniform(-config.embedding_init, config.embedding_init, (len(ivocab), config.embed_size)) # TODO what is done here and why does it work???
-            # word_embedding = np.random.normal(size=[vocab_size, config.embed_size]) 
+            word_embedding = np.random.uniform(-config['embedding_init'], config['embedding_init'], (len(ivocab), config['embed_size'])) # TODO what is done here and why does it work???
+            # word_embedding = np.random.normal(size=[vocab_size, config['embed_size']]) 
 
-        inputs, questions, answers, input_masks = train_data if config.train_mode else test_data
+        inputs, questions, answers, input_masks = train_data if config['train_mode'] else test_data
         if split_sentences:
             input_lens, sen_lens, max_sen_len = get_sentence_lens(inputs)
             max_mask_len = max_sen_len
@@ -374,7 +374,7 @@ def load_imsdb(config, split_sentences=True):
             input_lens = get_lens(inputs)
             mask_lens = get_lens(input_masks)
             max_mask_len = np.max(mask_lens)
-        max_input_len = min(np.max(input_lens), config.max_allowed_inputs)
+        max_input_len = min(np.max(input_lens), config['max_allowed_inputs'])
         #pad out arrays to max
         if split_sentences:
             inputs = pad_inputs(inputs, input_lens, max_input_len, "split_sentences", sen_lens, max_sen_len, vocab_size=len(vocab)+2).astype(int)
@@ -397,7 +397,7 @@ def load_imsdb(config, split_sentences=True):
         print(max_q_len)
         answers = np.squeeze(answers)
         questions = np.squeeze(questions)
-        with open(config.preprocessed_dataset_location, 'w') as fout:
+        with open(config['preprocessed_dataset_location'], 'w') as fout:
             np.savez(fout, \
                 questions=questions, \
                 inputs=inputs, \
@@ -406,18 +406,18 @@ def load_imsdb(config, split_sentences=True):
                 input_masks=input_masks, \
                 answers=answers)
     else:
-        data = np.loads(config.preprocessed_dataset_location)
+        data = np.loads(config['preprocessed_dataset_location'])
         questions = data['questions']
         inputs = data['inputs']
         q_lens = data['q_lens']
         input_lens = data['input_lens']
         input_masks = data['input_masks']
         answers = data['answers']
-    config.num_train = int(answers.shape[0] * 0.9)
-    if config.train_mode:
-        train = questions[:config.num_train], inputs[:config.num_train], q_lens[:config.num_train], input_lens[:config.num_train], input_masks[:config.num_train], answers[:config.num_train]
+    config['num_train'] = int(answers.shape[0] * 0.9)
+    if config['train_mode']:
+        train = questions[:config['num_train']], inputs[:config['num_train']], q_lens[:config['num_train']], input_lens[:config['num_train']], input_masks[:config['num_train']], answers[:config['num_train']]
 
-        valid = questions[config.num_train:], inputs[config.num_train:], q_lens[config.num_train:], input_lens[config.num_train:], input_masks[config.num_train:], answers[config.num_train:]
+        valid = questions[config['num_train']:], inputs[config['num_train']:], q_lens[config['num_train']:], input_lens[config['num_train']:], input_masks[config['num_train']:], answers[config['num_train']:]
         return train, valid, word_embedding, max_q_len, max_input_len, max_mask_len, len(vocab), max_a_len
 
     else:
