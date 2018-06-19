@@ -16,47 +16,6 @@ from tensorflow.python.layers import core as layers_core
 
 import imsdb_input
 
-class Config(object):
-    """Holds model hyperparams and data information."""
-
-    batch_size = 100
-    embed_size = 80
-    hidden_size = 80
-
-    max_epochs = 256
-    early_stopping = 20
-
-    dropout = 0.9
-    lr = 0.001
-    l2 = 0.001
-
-    cap_grads = False
-    max_grad_val = 10
-    noisy_grads = False
-
-    word2vec_init = False
-    embedding_init = np.sqrt(3)
-
-    # NOTE not currently used hence non-sensical anneal_threshold
-    anneal_threshold = 1000
-    anneal_by = 1.5
-
-    num_hops = 3
-    num_attention_features = 4
-
-    max_allowed_inputs = 130
-    num_train = 9000
-
-    floatX = np.float32
-
-    babi_id = "1"
-    babi_test_id = ""
-
-    train_mode = True
-
-    dataset_location = '/home/sbender/Documents/IMSDB/movie_scripts_simple_dataset_babiformat.json'
-    vocabulary_location = '/home/sbender/Documents/IMSDB/simple_dataset_vocabs.txt'
-
 def _add_gradient_noise(t, stddev=1e-3, name=None):
     """Adds gradient noise as described in http://arxiv.org/abs/1511.06807
     The input Tensor `t` should be a gradient.
@@ -82,6 +41,21 @@ def _position_encoding(sentence_size, embedding_size):
 
 class DMN_PLUS(object):
 
+    def __init__(self, config):
+        self.config = config
+        self.load_data(debug=False)
+        self.add_placeholders()
+        # set up embedding
+        self.embeddings = tf.Variable(self.word_embedding.astype(np.float32), name="Embedding") # TODO check if embedding is done correctly!
+        self.output = self.inference()
+        self.pred = self.get_predictions(self.output)
+        self.calculate_loss = self.add_loss_op(self.output)
+        self.train_step = self.add_training_op(self.calculate_loss)
+        self.merged = tf.summary.merge_all()
+        if self.config.is_loaded:
+            pass # TODO load data!
+
+
     def load_data(self, debug=False):
         """Loads train/valid/test data and sentence encoding"""
         # TODO self.vocabulary, self.batchsize, self.groundtruth
@@ -91,7 +65,7 @@ class DMN_PLUS(object):
             self.test, self.word_embedding, self.max_q_len, self.max_sentences, self.max_sen_len, self.vocab_size, self.max_a_len = imsdb_input.load_imsdb(self.config, split_sentences=True)
         self.encoding = _position_encoding(self.max_sen_len, self.config.embed_size)
         vocab_reader = open(self.config.vocabulary_location,'r')
-        self.vocabulary = vocab_reader.readlines()
+        self.vocabulary = vocab_reader.read().split('\n')
         vocab_reader.close()
         self.vocab_size = len(self.vocabulary) + 2 # UNK & EOS tokens -> +2
         self.batchsize = self.config.batch_size
@@ -162,6 +136,7 @@ class DMN_PLUS(object):
 
         return q_vec
 
+    # input module
     def get_input_representation(self):
         """Get fact (sentence) vectors via embedding, positional encoding and bi-directional GRU"""
         # get word vectors from embedding
@@ -169,7 +144,6 @@ class DMN_PLUS(object):
 
         # use encoding to get sentence representation
         inputs = tf.reduce_sum(inputs * self.encoding, 2)
-
         forward_gru_cell = tf.contrib.rnn.GRUCell(self.config.hidden_size)
         backward_gru_cell = tf.contrib.rnn.GRUCell(self.config.hidden_size)
         outputs, _ = tf.nn.bidirectional_dynamic_rnn(
@@ -324,8 +298,8 @@ class DMN_PLUS(object):
             train_op = tf.no_op()
             dp = 1
         total_steps = len(data[0]) // config.batch_size
-        total_loss = []
-        accuracy = 0
+        losses = []
+        accuracies = []
 
         # shuffle data
         p = np.random.permutation(len(data[0]))
@@ -356,42 +330,67 @@ class DMN_PLUS(object):
                 train_writer.add_summary(summary, num_epoch*total_steps + step)
 
             answers = a[step*config.batch_size:(step+1)*config.batch_size]
-            accuracy += np.sum(pred == answers)/float(len(answers))
+            current_accuracy = self.calculateBatchAccuracy(pred, answers)
+            accuracies.append(current_accuracy)
+            losses.append(loss)
 
-
-            total_loss.append(loss)
-            if verbose and step % verbose == 0:
+            if step % 5 == 0:
+                print('Step:     ' + str(step))
+                print('Loss:     ' + str(loss) + ' (' + str(np.mean(losses)) + ')')
+                print('Accuracy: ' + str(current_accuracy) + ' (' + str(np.mean(accuracies)) + ')')
+                print('Q:        ' + self.getSentenceString(qp[index][0]))
+                print('GT:       ' + self.getSentenceString(answers[0]))
+                print('Pred:     ' + self.getSentenceString(pred[0]))
+                print('')
+            '''if verbose and step % verbose == 0:
                 sys.stdout.write('\r{} / {} : loss = {}'.format(
-                  step, total_steps, np.mean(total_loss)))
-                sys.stdout.flush()
+                  step, total_steps, np.mean(losses)))
+                sys.stdout.flush()'''
 
 
         if verbose:
             sys.stdout.write('\r')
 
-        return np.mean(total_loss), accuracy/float(total_steps)
+        return np.mean(losses), np.mean(accuracies)
 
+    def getSentenceString(self, sentence):
+        s = ''
+        for it in range(len(sentence)):
+            if sentence[it] < self.vocab_size - 2:
+                s += self.vocabulary[sentence[it]] + ' '
+            elif sentence[it] == self.vocab_size - 2:
+                s += 'UNK' + ' ' # UNK token
+            else:
+                break # EOS token
+        return s[:-1]
 
-    def __init__(self, config):
-        self.config = config
-        self.variables_to_save = {}
-        self.load_data(debug=False)
-        self.add_placeholders()
-        ##code.interact(local=dict(globals(), **locals()))
-        # set up embedding
-        self.embeddings = tf.Variable(self.word_embedding.astype(np.float32), name="Embedding")
+    def calculateBatchAccuracy(self, pred, gt):
+        accuracies = []
+        for batch in range(pred.shape[0]):
+            accuracies.append(self.calculateSentenceAccuracy(pred[batch],gt[batch]))
+        return np.mean(accuracies)
 
-        self.output = self.inference()
-        self.pred = self.get_predictions(self.output)
-        self.calculate_loss = self.add_loss_op(self.output)
-        self.train_step = self.add_training_op(self.calculate_loss)
-        self.merged = tf.summary.merge_all()
-
-        '''weights = tf.ones(self.answer_placeholder.shape)
-        weights = tf.cast(weights, tf.float32)
-        self.test_output = tf.placeholder(tf.int32, shape=(self.config.batch_size, self.max_a_len,))
-        test_output = tf.one_hot(self.test_output, self.vocab_size)
-        self.test_loss = tf.contrib.seq2seq.sequence_loss(test_output, self.answer_placeholder, weights)
-
-        self.test_output_energy = tf.placeholder(tf.float32, shape=(self.config.batch_size, self.max_a_len,self.vocab_size))
-        self.test_loss2 = tf.contrib.seq2seq.sequence_loss(self.test_output_energy, self.answer_placeholder, weights)'''
+    def calculateSentenceAccuracy(self, pred, gt):
+        num_correct = 0
+        num_false = 0
+        for word in range(pred.shape[0]):
+            if pred[word] == self.vocab_size - 1:
+                for word in range(word,pred.shape[0]):
+                    if gt[word] == self.vocab_size - 1:
+                        break
+                    else:
+                        num_false += 1
+                break
+            elif gt[word] == self.vocab_size - 1:
+                for word in range(word,pred.shape[0]):
+                    if pred[word] == self.vocab_size - 1:
+                        break
+                    else:
+                        num_false += 1
+                break
+            else:
+                if gt[word] == pred[word]:
+                    num_correct += 1
+                else:
+                    num_false += 1
+        return num_correct / float(num_correct + num_false)

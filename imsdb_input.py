@@ -143,7 +143,7 @@ def process_word(word, word2vec, vocab, ivocab, word_vector_size, to_return="wor
     else:
         return -1
 
-def process_input(data_raw, floatX, word2vec, vocab, ivocab, embed_size, split_sentences=False):
+def process_input(data_raw, floatX, word2vec, vocab, ivocab, embed_size, split_sentences=False, max_num_data=1000000):
     questions = []
     inputs = []
     answers = []
@@ -218,8 +218,8 @@ def process_input(data_raw, floatX, word2vec, vocab, ivocab, embed_size, split_s
             # #code.interact(local=dict(globals(), **locals()))
             if num_sucesses % 100 == 0:
                 print(str(num_sucesses) + " / " + str(len(data_raw)))
-                if num_sucesses == 20000:
-                    break #
+                if num_sucesses >= max_num_data:
+                    break #'''
         except Exception as e:
             # reset the lists
             print(e)
@@ -321,79 +321,98 @@ def create_embedding(word2vec, ivocab, embed_size):
 def load_imsdb(config, split_sentences=True):
     #
     #split_sentences = False
-    dataset_reader = open(config.dataset_location,'r')
-    imsdb_data = json.load(dataset_reader, strict=False)
-    val_test_border = int(len(imsdb_data) * 0.9)
-    babi_train_raw = imsdb_data[:val_test_border]
-    babi_test_raw = imsdb_data[val_test_border:]
-    dataset_reader.close()
-    ###
-    # vocab = {}
-    vocab_reader = open(config.vocabulary_location,'r')
-    vocab = vocab_reader.read()
-    vocab_reader.close()
-    vocab = vocab.split('\n')
-    ivocab = {}
+    if config.preprocess_data:
+        dataset_reader = open(config.dataset_location,'r')
+        imsdb_data = json.load(dataset_reader, strict=False)
+        test_border = int(len(imsdb_data) * 0.9)
+        babi_train_raw = imsdb_data[:test_border]
+        babi_test_raw = imsdb_data[test_border:]
+        dataset_reader.close()
+        ###
+        # vocab = {}
+        vocab_reader = open(config.vocabulary_location,'r')
+        vocab = vocab_reader.read()
+        vocab_reader.close()
+        vocab = vocab.split('\n')
+        vocab_size = len(vocab) + 2 # UNK & EOS
+        # no idea what this is for!!!
+        ivocab = {}
 
-    #babi_train_raw_old, babi_test_raw_old = get_babi_raw(config.babi_id, config.babi_test_id)
+        #babi_train_raw_old, babi_test_raw_old = get_babi_raw(config.babi_id, config.babi_test_id)
 
-    if config.word2vec_init:
-        assert config.embed_size == 100
-        word2vec = load_glove(config.embed_size)
+        if config.word2vec_init:
+            assert config.embed_size == 100
+            word2vec = load_glove(config.embed_size)
+        else:
+            word2vec = {}
+
+        # set word at index zero to be end of sentence token so padding with zeros is consistent
+        '''process_word(word = "<eos>", \
+                    word2vec = word2vec, \
+                    vocab = vocab, \
+                    ivocab = ivocab, \
+                    word_vector_size = config.embed_size, \
+                    to_return = "index")'''
+
+        print('==> get train inputs')
+        train_data = process_input(babi_train_raw, np.float32, word2vec, vocab, ivocab, config.embed_size, split_sentences, config.max_num_train_data)
+        print('==> get test inputs')
+        test_data = process_input(babi_test_raw, np.float32, word2vec, vocab, ivocab, config.embed_size, split_sentences, config.max_num_test_data)
+
+        if config.word2vec_init:
+            assert config.embed_size == 100
+            word_embedding = create_embedding(word2vec, ivocab, config.embed_size)
+        else:
+            word_embedding = np.random.uniform(-config.embedding_init, config.embedding_init, (len(ivocab), config.embed_size)) # TODO what is done here and why does it work???
+            # word_embedding = np.random.normal(size=[vocab_size, config.embed_size]) 
+
+        inputs, questions, answers, input_masks = train_data if config.train_mode else test_data
+        if split_sentences:
+            input_lens, sen_lens, max_sen_len = get_sentence_lens(inputs)
+            max_mask_len = max_sen_len
+        else:
+            input_lens = get_lens(inputs)
+            mask_lens = get_lens(input_masks)
+            max_mask_len = np.max(mask_lens)
+        max_input_len = min(np.max(input_lens), config.max_allowed_inputs)
+        #pad out arrays to max
+        if split_sentences:
+            inputs = pad_inputs(inputs, input_lens, max_input_len, "split_sentences", sen_lens, max_sen_len, vocab_size=len(vocab)+2).astype(int)
+            input_masks = np.zeros(len(inputs))
+        else:
+            inputs = pad_inputs(inputs, input_lens, max_input_len)
+            input_masks = pad_inputs(input_masks, mask_lens, max_mask_len, "mask")
+
+        q_lens = get_lens(questions)
+        max_q_len = np.max(q_lens)
+        questions = pad_inputs(questions, sen_lens=q_lens, max_sen_len=max_q_len, vocab_size=len(vocab)+2).astype(int)
+
+        a_lens = get_lens(answers)
+        max_a_len = np.max(a_lens)
+        answers = pad_inputs(answers, sen_lens=a_lens, max_sen_len=max_a_len, vocab_size=len(vocab)+2).astype(int)
+
+        print('max_a_len')
+        print(max_a_len)
+        print('max_q_len')
+        print(max_q_len)
+        answers = np.squeeze(answers)
+        questions = np.squeeze(questions)
+        with open(config.preprocessed_dataset_location, 'w') as fout:
+            np.savez(fout, \
+                questions=questions, \
+                inputs=inputs, \
+                q_lens=q_lens, \
+                input_lens=input_lens, \
+                input_masks=input_masks, \
+                answers=answers)
     else:
-        word2vec = {}
-
-    # set word at index zero to be end of sentence token so padding with zeros is consistent
-    '''process_word(word = "<eos>", \
-                word2vec = word2vec, \
-                vocab = vocab, \
-                ivocab = ivocab, \
-                word_vector_size = config.embed_size, \
-                to_return = "index")'''
-
-    print('==> get train inputs')
-    train_data = process_input(babi_train_raw, config.floatX, word2vec, vocab, ivocab, config.embed_size, split_sentences)
-    print('==> get test inputs')
-    test_data = process_input(babi_test_raw, config.floatX, word2vec, vocab, ivocab, config.embed_size, split_sentences)
-
-    if config.word2vec_init:
-        assert config.embed_size == 100
-        word_embedding = create_embedding(word2vec, ivocab, config.embed_size)
-    else:
-        word_embedding = np.random.uniform(-config.embedding_init, config.embedding_init, (len(ivocab), config.embed_size))
-
-    inputs, questions, answers, input_masks = train_data if config.train_mode else test_data
-    ###code.interact(local=dict(globals(), **locals()))
-    if split_sentences:
-        input_lens, sen_lens, max_sen_len = get_sentence_lens(inputs)
-        max_mask_len = max_sen_len
-    else:
-        input_lens = get_lens(inputs)
-        mask_lens = get_lens(input_masks)
-        max_mask_len = np.max(mask_lens)
-    max_input_len = min(np.max(input_lens), config.max_allowed_inputs)
-    #pad out arrays to max
-    if split_sentences:
-        inputs = pad_inputs(inputs, input_lens, max_input_len, "split_sentences", sen_lens, max_sen_len, vocab_size=len(vocab)+2).astype(int)
-        input_masks = np.zeros(len(inputs))
-    else:
-        inputs = pad_inputs(inputs, input_lens, max_input_len)
-        input_masks = pad_inputs(input_masks, mask_lens, max_mask_len, "mask")
-
-    q_lens = get_lens(questions)
-    max_q_len = np.max(q_lens)
-    questions = pad_inputs(questions, sen_lens=q_lens, max_sen_len=max_q_len, vocab_size=len(vocab)+2).astype(int)
-
-    a_lens = get_lens(answers)
-    max_a_len = np.max(a_lens)
-    answers = pad_inputs(answers, sen_lens=a_lens, max_sen_len=max_a_len, vocab_size=len(vocab)+2).astype(int)
-
-    print('max_a_len')
-    print(max_a_len)
-    print('max_q_len')
-    print(max_q_len)
-    answers = np.squeeze(answers)
-    questions = np.squeeze(questions)
+        data = np.loads(config.preprocessed_dataset_location)
+        questions = data['questions']
+        inputs = data['inputs']
+        q_lens = data['q_lens']
+        input_lens = data['input_lens']
+        input_masks = data['input_masks']
+        answers = data['answers']
     config.num_train = int(answers.shape[0] * 0.9)
     if config.train_mode:
         train = questions[:config.num_train], inputs[:config.num_train], q_lens[:config.num_train], input_lens[:config.num_train], input_masks[:config.num_train], answers[:config.num_train]
