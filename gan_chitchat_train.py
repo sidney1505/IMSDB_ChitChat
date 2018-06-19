@@ -18,7 +18,7 @@ parser.add_argument("-c", "--commit", default=False, help="specify path, where c
 
 args = parser.parse_args()
 
-# hi
+# blub
 """Holds model hyperparams and data information."""
 base_config = {
     'batch_size' : 100, # test
@@ -122,7 +122,7 @@ else:
             code.interact(local=dict(globals(), **locals()))
 
 best_overall_val_loss = float('inf')
-
+2018_06_19_18_31_18
 # create model
 with tf.variable_scope('DMN') as scope:
     from dmn_plus_gan import DMN_PLUS
