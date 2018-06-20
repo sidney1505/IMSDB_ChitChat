@@ -59,7 +59,8 @@ base_config = {
     'num_train' : None,
     'num_val' : None,
     'num_test' : None,
-    'skip_preprocessing' : False
+    'skip_preprocessing' : False,
+    'num_weights' : None
 }
 
 def writeLog(path, value):

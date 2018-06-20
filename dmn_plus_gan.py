@@ -59,6 +59,7 @@ class DMN_PLUS(object):
         self.calculate_loss = self.add_loss_op(self.output)
         self.train_step = self.add_training_op(self.calculate_loss)
         self.merged = tf.summary.merge_all()
+        self.config['num_weights'] = self.countVariables()
 
 
     def load_data(self, debug=False):
@@ -115,6 +116,7 @@ class DMN_PLUS(object):
         
     def add_training_op(self, loss):
         """Calculate and apply gradients"""
+        '''
         opt = tf.train.AdamOptimizer(learning_rate=self.config['lr'])
         gvs = opt.compute_gradients(loss)
 
@@ -123,8 +125,16 @@ class DMN_PLUS(object):
             gvs = [(tf.clip_by_norm(grad, self.config['max_grad_val']), var) for grad, var in gvs]
         if self.config['noisy_grads']:
             gvs = [(_add_gradient_noise(grad), var) for grad, var in gvs]
-
         train_op = opt.apply_gradients(gvs)
+        '''
+        #optimizer = tf.train.MomentumOptimizer(self.config['lr'],0.9)
+        optimizer = tf.train.AdamOptimizer(learning_rate=self.config['lr'])
+        params = tf.trainable_variables()
+        self.weights = params
+        gradients = tf.gradients(loss, params)
+        clipped_gradients, _ = tf.clip_by_global_norm(gradients, 2.0) # in [1,5]
+        self.gradients = clipped_gradients
+        train_op = optimizer.apply_gradients(zip(self.gradients, params))
         return train_op
   
 
@@ -311,6 +321,7 @@ class DMN_PLUS(object):
         qp, ip, ql, il, im, a = data
         qp, ip, ql, il, im, a = qp[p], ip[p], ql[p], il[p], im[p], a[p]
 
+
         for step in range(total_steps):
             index = range(step*config['batch_size'],(step+1)*config['batch_size'])
             feed = {self.question_placeholder: qp[index],
@@ -320,8 +331,8 @@ class DMN_PLUS(object):
                   self.answer_placeholder: a[index],
                   self.dropout_placeholder: dp,
                   self.is_training: train}
-            loss, pred, summary, _, energy = session.run(
-              [self.calculate_loss, self.pred, self.merged, train_op, self.energy], feed_dict=feed)
+            loss, pred, summary, _, energy, current_gradients, current_weights = session.run(
+              [self.calculate_loss, self.pred, self.merged, train_op, self.energy, self.gradients, self.weights], feed_dict=feed)
             #
             current_accuracy = self.calculateBatchAccuracy(pred, a[index])
             #
@@ -336,7 +347,7 @@ class DMN_PLUS(object):
                 print('GT:       ' + self.getSentenceString(a[index][0]))
                 print('Pred:     ' + self.getSentenceString(pred[0]))
                 print('')
-
+                self.printGradients(current_gradients, current_weights)
             if train:
                 self.config['global_step'] += 1
                 if self.config['global_step'] % 1000 == 0:
@@ -390,3 +401,20 @@ class DMN_PLUS(object):
                 else:
                     num_false += 1
         return num_correct / float(num_correct + num_false)
+
+    def countVariables(self):
+        return np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()])
+
+    def printTrainableVariablesLight(self):
+        print('Total Variables: ' + str(len(tf.trainable_variables())) + ' tensors containing ' + str(self.config['num_weights']) + ' weights!')
+        for v in tf.trainable_variables():
+            variable_size = np.prod(v.get_shape().as_list())
+            print(v.name + ' : ' + str(v.get_shape()) + ' : ' + str(variable_size) + ' (' + str(100 * float(variable_size) / self.config['num_weights']) + '%)')
+
+    def printGradients(self, gradients, weights):
+        print('Total Variables: ' + str(len(tf.trainable_variables())) + ' tensors containing ' + str(self.config['num_weights']) + ' weights!')
+        for it, v in enumerate(tf.trainable_variables()):
+            if it > 0:
+                variable_size = np.prod(v.get_shape().as_list())
+                print(str(it) + ' : ' + v.name + '    Shape: ' + str(v.get_shape()) + '   Size: ' + str(variable_size) + ' (' + str(100 * float(variable_size) / self.config['num_weights']) + '%)' + \
+                    '   Gradients: ' + str(np.mean(np.absolute(gradients[it]))) + ' (' + str(100 * self.config['lr'] * np.mean(np.absolute(gradients[it])) / np.mean(np.absolute(weights[it]))) + '%)')
